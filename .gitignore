@@ -1,0 +1,5 @@
+cosmx_rna/data/
+cosmx_rna/output/
+*.rds
+*.csv
+*.pdf
