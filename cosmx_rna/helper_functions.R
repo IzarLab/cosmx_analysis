@@ -1,5 +1,5 @@
 # These are helper functions for CosMX data analysis
-# import them go your analysis using source("helper_functions.R")
+# import them to your analysis using source("helper_functions.R")
 # Author: Frederik Stihler
 
 ## IO UTILS
@@ -1290,3 +1290,5 @@ totalcount_norm <- function(counts_matrix, tc = NULL){
   tc[tc==0] <- 1
   return(Matrix::Diagonal(x = scale.factor/tc, names = TRUE) %*% counts_matrix)
 }
+
+## Functions relevant for Cell Typing with InSituType

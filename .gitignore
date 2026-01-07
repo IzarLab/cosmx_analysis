@@ -3,3 +3,4 @@ cosmx_rna/output/
 *.rds
 *.csv
 *.pdf
+.DS_Store
