@@ -1292,3 +1292,349 @@ totalcount_norm <- function(counts_matrix, tc = NULL){
 }
 
 ## Functions relevant for Cell Typing with InSituType
+
+
+# CT_QC_plot:
+# This function generates a comprehensive PDF report of cluster-level quality control (QC) plots for cell typing validation.
+#
+# The PDF includes:
+#   - Barplot of cell counts per cluster.
+#   - Violin plots for QC features across clusters (e.g., marker expression, gene/cell counts).
+#   - Optional heatmap and flightpath/trajectory plots if InSituType results provided.
+#   - Embedding plots of clusters, annotations, and study IDs for visual inspection.
+
+CT_QC_plot <- function(seu, cluster_col, cluster_pal=NULL, annotation_col = NULL, annotation_pal = NULL, IST_obj = NULL, out_dir = ".", reduction = NULL) {
+    
+    pdf(file.path(out_dir, paste0("Cluster_QC_", cluster_col, ".pdf")), width = 10, height = 10)
+
+    print(count_per_ct(seu, cluster_col=cluster_col, cluster_pal = cluster_pal))
+    print(feature_vlns(seu, cluster_col=cluster_col, features = c("Mean.PanCK", "Mean.CD45", "nCount_RNA", "nFeature_RNA"), cluster_pal = cluster_pal))
+
+
+    if (!is.null(IST_obj)) {
+        heatmap(sweep(IST_obj$profiles, 1, pmax(apply(IST_obj$profiles, 1, max), .2), "/"), scale = "none",
+            main = "Cluster mean expression profiles")
+        fp_layout(IST_obj, cluster_pal = cluster_pal)
+        print(flightpath_plot(flightpath_result = NULL, insitutype_result = IST_obj, col = cluster_pal[IST_obj$clust]))
+    }
+
+    if (reduction %in% names(seu@reductions)) {
+        p1 <- plot_embedding(
+            seu,
+            reduction = reduction,
+            group.by = cluster_col,
+            label = TRUE,
+            palette = cluster_pal,
+            legend = TRUE
+            ) 
+        print(p1)
+
+        if (!is.null(annotation_col)) {
+            p2 <- plot_embedding(
+                seu,
+                reduction = reduction,
+                group.by = annotation_col,
+                label = TRUE,
+                palette = annotation_pal,
+                legend = TRUE
+                ) 
+            print(p2)
+        }
+
+        p3 <- plot_embedding(
+            seu,
+            reduction = reduction,
+            group.by = "study_id",
+            label = TRUE,
+            palette = NULL,
+            legend = TRUE
+            ) 
+        print(p3)
+    }
+
+    dev.off()
+    }
+
+count_per_ct <- function(seu, cluster_col, xlab = "Cell Type",
+                         ylab = "Cell Count", title = "Cell Count per Cell Type",
+                         cluster_pal = NULL) {
+
+    df <- seu@meta.data %>%
+        dplyr::count(celltype = .data[[cluster_col]]) %>%
+        dplyr::arrange(desc(n))
+
+    p <- ggplot(df, aes(x = reorder(celltype, -n), y = n, fill = celltype)) +
+        geom_bar(stat = "identity") +
+        labs(x = xlab, y = ylab, title = title) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1),
+              legend.position = "none")
+
+    if (!is.null(cluster_pal)) {
+        p <- p + scale_fill_manual(values = cluster_pal)}
+    p
+}
+
+feature_vlns <- function(seu, cluster_col, features = c("Mean.PanCK", "Mean.CD45"), cluster_pal = NULL) {
+    levels_ct <- levels(seu[[cluster_col]][,1])
+    cols_vec <- cluster_pal[levels_ct]
+
+    plots <- lapply(features, function(feature) {
+        VlnPlot(
+            seu,
+            features = feature,
+            group.by = cluster_col,
+            pt.size = 0,
+            cols = cols_vec
+        ) +
+            ggtitle(paste0(feature, " by ", cluster_col)) +
+            theme_bw() +
+            theme(
+            legend.position = "none",
+            axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+            plot.title = element_text(hjust = 0.5)
+            ) +
+            coord_cartesian(clip = "off")
+        })
+
+    plots
+}
+
+fp_layout <- function(IST_obj, cluster_pal = NULL) {
+    if (is.null(cluster_pal)) {
+        cols <- InSituType::colorCellTypes(freqs = table(IST_obj$clust), palette = "brewers")
+    } else {
+        cols <- cluster_pal
+    }
+
+    flightpath <- InSituType::flightpath_layout(logliks = IST_obj$logliks, profiles = IST_obj$profiles)
+    par(mar = c(0,0,0,0))
+    plot(flightpath$cellpos, pch = 16, cex = 0.2, col = cols[IST_obj$clust])
+    text(flightpath$clustpos[, 1], flightpath$clustpos[, 2], rownames(flightpath$clustpos), cex = 0.7)
+    par(mar = c(5, 4, 4, 2) + 0.1)
+}
+
+
+plot_all_cts <- function(seu, cluster_col, cluster_pal = NULL, out_dir = ".", save_pngs = FALSE, folder_name = "CT_PLOTS") {
+    # Extract the coordinates from metadata
+    xy <- as.matrix(seu@meta.data[, c("x_slide_mm", "y_slide_mm")])
+
+    if (save_pngs) {
+        # Create the output directory if it doesn't exist
+        out_dir <- file.path(out_dir, folder_name)
+        if (!dir.exists(out_dir)) {
+            dir.create(out_dir)
+        }
+    }
+
+    for (ct in unique(seu@meta.data[[cluster_col]])) {
+        if (save_pngs) {
+            png(file.path(out_dir, paste0("celltype_", ct, "_spread.png")), 
+            width = diff(range(xy[,1]))*.7, height = diff(range(xy[,2]))*.7, units = "in", 
+            res = 400)  # res of 400 is pretty good; 600 is publication-quality
+            par(mar = c(0,0,0,0))
+        }
+        plot(xy, pch = 16, col = scales::alpha(cluster_pal[seu@meta.data[[cluster_col]]], 0.3), cex = 0.1,
+            xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+        points(xy[semisup$clust == ct, ], pch = 16, cex = 0.1, col = "black")
+        legend("top", legend = ct)
+        if (save_pngs) {
+            dev.off()
+        }
+    }
+
+    if (save_pngs) {
+        par(mar = c(5, 4, 4, 2) + 0.1)
+    }
+}
+
+plot_hm_pdf <- function(IST_obj, out_dir = ".", file_name = "Cluster_mean_expression_profiles.pdf") {
+    pdf(file.path(out_dir, paste0(file_name)), width = 6, height = 20)
+    
+    heatmap(sweep(IST_obj$profiles, 1, pmax(apply(IST_obj$profiles, 1, max), .2), "/"), scale = "none",
+        main = "Cluster mean expression profiles")
+
+    dev.off()
+}
+
+
+
+## DEG specific functions
+plot_volcano <- function(df, 
+                         x_col, 
+                         y_col, 
+                         x_trans = NULL, 
+                         y_trans = "-log10", 
+                         x_cut = 0.5, 
+                         p_cut = 0.05, 
+                         genes_of_interest = NULL,
+                         sig_color = "red", 
+                         insig_color = "grey50", 
+                         poi_color = "blue") {
+  
+  # 1. Prepare data and apply transformations
+  plt_df <- df
+  plt_df$X <- plt_df[[x_col]]
+  plt_df$Y <- plt_df[[y_col]]
+  
+  if (!is.null(x_trans) && x_trans == "log2") plt_df$X <- log2(plt_df$X)
+  if (!is.null(y_trans) && y_trans == "-log10") plt_df$Y_plot <- -log10(plt_df$Y) else plt_df$Y_plot <- plt_df$Y
+  
+  # 2. Define Significance categories
+  # Note: logic uses the transformed X (Effect) but the RAW p-value threshold (p_cut)
+  plt_df$status <- "Not Significant"
+  plt_df$status[plt_df$Y < p_cut & abs(plt_df$X) > x_cut] <- "Significant"
+  
+  # 3. Handle specific genes of interest (POI)
+  plt_df$is_poi <- FALSE
+  if (!is.null(genes_of_interest)) {
+    plt_df$is_poi <- rownames(plt_df) %in% genes_of_interest
+  }
+  
+  # 4. Determine plotting order (so blue points are on top)
+  plt_df <- plt_df[order(plt_df$status, plt_df$is_poi), ]
+
+  # 5. Build Plot
+  g <- ggplot(plt_df, aes(x = X, y = Y_plot)) +
+    # Background points
+    geom_point(aes(color = status), alpha = 0.6, size = 1.5) +
+    # Highlight Genes of Interest
+    geom_point(data = subset(plt_df, is_poi), color = poi_color, size = 2.5) +
+    # Vertical lines for effect size
+    geom_vline(xintercept = c(-x_cut, x_cut), linetype = "dashed", color = "darkgrey") +
+    geom_vline(xintercept = 0, linetype = "solid", color = "black", alpha = 0.3) +
+    # Horizontal line for p-value
+    geom_hline(yintercept = ifelse(y_trans == "-log10", -log10(p_cut), p_cut), 
+               linetype = "dashed", color = "darkgrey") +
+    # Labels for significant OR points of interest
+    geom_text_repel(
+      data = subset(plt_df, status == "Significant" | is_poi),
+      aes(label = rownames(subset(plt_df, status == "Significant" | is_poi))),
+      size = 3,
+      max.overlaps = 15,
+      box.padding = 0.5,
+      # Color labels blue if they are POIs, otherwise black
+      color = ifelse(subset(plt_df, status == "Significant" | is_poi)$is_poi, poi_color, "black")
+    ) +
+    scale_color_manual(values = c("Significant" = sig_color, "Not Significant" = insig_color)) +
+    labs(
+      x = paste("Effect Size (", x_col, ")"),
+      y = paste(y_trans, "(", y_col, ")"),
+      color = "Status"
+    ) +
+    theme_classic() +
+    theme(legend.position = "top")
+
+  return(g)
+}
+
+get_gene_bin_plot_list <- function(seu_obj, 
+                                   genes, 
+                                   bin_col, 
+                                   bins_to_include = NULL, 
+                                   bin_order = NULL,
+                                   bin_colors = NULL) {
+  
+  # 1. Verify genes
+  genes <- intersect(genes, rownames(seu_obj))
+  if(length(genes) == 0) stop("None of the provided genes found.")
+  
+  # 2. Extract and Prepare Data
+  # We use data.table for efficiency
+  meta <- as.data.table(seu_obj@meta.data)
+  expr_data <- Seurat::GetAssayData(seu_obj, slot = "data")[genes, , drop = FALSE]
+  
+  plot_list <- list()
+  
+  # 3. Loop through genes and create individual plots
+  for (goi in genes) {
+    
+    # Construct DT for this specific gene
+    dt <- data.table(
+      expr = as.numeric(expr_data[goi, ]),
+      bin = meta[[bin_col]]
+    )
+    
+    # Filter and order bins
+    if (!is.null(bins_to_include)) dt <- dt[bin %in% bins_to_include]
+    if (!is.null(bin_order)) dt[, bin := factor(bin, levels = bin_order)]
+    
+    # Calculate Mean and Standard Error
+    summary_dt <- dt[, .(
+      mean_expr = mean(expr, na.rm = TRUE),
+      se = sd(expr, na.rm = TRUE) / sqrt(.N)
+    ), by = bin]
+    
+    # 4. Create the Plot
+    p <- ggplot(summary_dt, aes(x = bin, y = mean_expr, fill = bin)) +
+      geom_col(color = "black", width = 0.7) +
+      geom_errorbar(aes(ymin = mean_expr - se, ymax = mean_expr + se), 
+                    width = 0.2, color = "black") +
+      scale_y_continuous(expand = expansion(mult = c(0, 0.1))) + # Adds 10% space at top
+      theme_classic() +
+      labs(
+        title = paste("Gene:", goi),
+        subtitle = paste("Cell type:", celltype_oi),
+        x = "Spatial Zone",
+        y = "Mean Normalized Expression (+/- SE)",
+        fill = "Zone"
+      ) +
+      theme(
+        plot.title = element_text(face = "bold", size = 16),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none" # Hide legend to maximize space on the PDF page
+      )
+    
+    if (!is.null(bin_colors)) p <- p + scale_fill_manual(values = bin_colors)
+    
+    plot_list[[goi]] <- p
+  }
+  
+  return(plot_list)
+}
+
+generate_spatial_dotplot <- function(seu_obj, 
+                                     genes, 
+                                     bin_col,
+                                     scale = TRUE,
+                                     bins_to_include = NULL, 
+                                     bin_order = NULL) {
+  
+  # 1. Filter genes to ensure they exist
+  genes <- intersect(genes, rownames(seu_obj))
+  
+  # 2. Handle subsetting and ordering
+  plot_obj <- seu_obj
+  
+  # Filter bins if requested
+  if (!is.null(bins_to_include)) {
+    plot_obj <- subset(plot_obj, cells = colnames(plot_obj)[plot_obj[[bin_col, drop=TRUE]] %in% bins_to_include])
+  }
+  
+  # Enforce factor levels for the bin column to control plot order
+  if (!is.null(bin_order)) {
+    plot_obj@meta.data[[bin_col]] <- factor(plot_obj@meta.data[[bin_col]], levels = bin_order)
+  }
+
+  # 3. Generate DotPlot using group.by
+  p <- DotPlot(
+    object = plot_obj, 
+    features = genes, 
+    group.by = bin_col,      # Use group.by instead of changing Idents
+    cols = c("lightgrey", "firebrick"), 
+    scale = scale, 
+    col.min = -2.5, 
+    col.max = 2.5
+  ) +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(
+      title = "Spatial Gene Expression",
+      x = "Genes",
+      y = "Spatial Zone",
+      size = "Percent Expressed",
+      color = "Average Expression (Z-score)"
+    )
+  
+  return(p)
+}

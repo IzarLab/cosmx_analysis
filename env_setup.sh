@@ -51,5 +51,6 @@ BiocManager::install("ComplexHeatmap")
 BiocManager::install("DESeq2")
 
 install.packages("Cairo")
+# install.packages("INLA",repos=c(getOption("repos"),INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE)
 
 q()
