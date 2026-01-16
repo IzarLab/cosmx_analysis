@@ -52,5 +52,14 @@ BiocManager::install("DESeq2")
 
 install.packages("Cairo")
 # install.packages("INLA",repos=c(getOption("repos"),INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE)
+update.packages("emmeans")
 
 q()
+
+
+
+# Git commits
+git pull
+git add .
+git commit -m "commit message"
+git push

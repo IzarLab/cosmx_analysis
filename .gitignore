@@ -1,5 +1,6 @@
 cosmx_rna/data/
 cosmx_rna/output/
+cosmx_rna/NBClust-Plots
 *.rds
 *.csv
 *.pdf
