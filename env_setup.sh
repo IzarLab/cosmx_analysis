@@ -56,7 +56,7 @@ update.packages("emmeans")
 
 q()
 
-
+conda activate COSMX_RNA_env && conda env export > COSMX_RNA_env.env.yml && conda deactivate
 
 # Git commits
 git pull

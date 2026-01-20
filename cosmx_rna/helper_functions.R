@@ -364,12 +364,24 @@ plot_embedding <- function(
     # palette logic
     if (is.null(palette)) {
       pal_vec <- unname(pals::alphabet())
+      pal_use <- setNames(pal_vec[seq_along(levels_vec)], levels_vec)
     } else {
-      pal_vec <- palette
+      # Check if the user provided a named vector
+      if (!is.null(names(palette))) {
+        # Filter and reorder the palette to match levels exactly
+        # This ensures cluster "a" always gets the color assigned to "a"
+        pal_use <- palette[levels_vec]
+        
+        # Handle cases where some levels might be missing from the palette
+        pal_use[is.na(pal_use)] <- na_color
+      } else {
+        # Fallback for unnamed palettes: match by position
+        pal_vec <- palette
+        if (length(pal_vec) < length(levels_vec))
+          pal_vec <- rep(pal_vec, length.out = length(levels_vec))
+        pal_use <- setNames(pal_vec[seq_along(levels_vec)], levels_vec)
+      }
     }
-    if (length(pal_vec) < length(levels_vec))
-      pal_vec <- rep(pal_vec, length.out = length(levels_vec))
-    pal_use <- setNames(pal_vec[seq_along(levels_vec)], levels_vec)
 
     p <- ggplot(emb, aes(Dim1, Dim2, color = group)) +
       geom_fun(size = point_size, alpha = alpha) +
@@ -1099,7 +1111,7 @@ qc_all_slides <- function(seurat_list, outdir = ".", file_prefix = "QC_Report_",
 }
 
 
-filter_seurat_objects <- function(seurat_list, thresholds_list = NULL, low_thres = 0.025, high_thres = 0.975, area_upper = 600, area_lower = 40, flag_col = "remove_flagged_cells") {
+filter_seurat_objects <- function(seurat_list, thresholds_list = NULL, low_thres = 0.025, high_thres = 0.975, area_upper = 600, area_lower = 40, flag_col = "remove_flagged_cells", region_col = "region", min_cells_per_region = 500) {
   filtered_list <- list()
   log_list <- list()
   
@@ -1159,7 +1171,25 @@ filter_seurat_objects <- function(seurat_list, thresholds_list = NULL, low_thres
         seu_filtered <- subset(seu_filtered, subset = Area.um2 <= area_upper & Area.um2 >= area_lower)
       }
     }
-    
+
+    # Region-based Filtering
+    regions_removed_count <- 0
+    if (region_col %in% colnames(seu_filtered@meta.data)) {
+      # Count cells currently in each region
+      region_counts <- table(seu_filtered@meta.data[[region_col]])
+      # Identify which regions meet the minimum threshold
+      keep_regions <- names(region_counts[region_counts >= min_cells_per_region])
+      # Calculate how many cells are in the 'dropped' regions for the log
+      regions_removed_count <- sum(region_counts[!(names(region_counts) %in% keep_regions)])
+      # Perform the subsetting
+      seu_filtered <- subset(seu_filtered, 
+                             cells = rownames(seu_filtered@meta.data)[seu_filtered@meta.data[[region_col]] %in% keep_regions])
+      seu_filtered@meta.data[[region_col]] <- droplevels(as.factor(seu_filtered@meta.data[[region_col]]))
+
+      message(paste0("  Regions dropped: ", length(region_counts) - length(keep_regions), 
+                     " (Total cells removed from these regions: ", regions_removed_count, ")"))
+    }
+
     remaining_cells <- ncol(seu_filtered)
     
     # Store filtered object
@@ -1293,6 +1323,57 @@ totalcount_norm <- function(counts_matrix, tc = NULL){
 
 ## Functions relevant for Cell Typing with InSituType
 
+plot_composition <- function(seu, cluster_col, split_by, type = "relative", palette = NULL) {
+  
+  # 1. Extract and aggregate data
+  df <- seu@meta.data %>%
+    dplyr::group_by(!!rlang::sym(cluster_col), !!rlang::sym(split_by)) %>%
+    dplyr::tally() %>%
+    dplyr::ungroup()
+  
+  colnames(df) <- c("Cluster", "SplitVar", "Count")
+  
+  # 2. Determine scaling and labels
+  # 'fill' scales bars to 1 (100%), 'stack' keeps raw counts
+  pos <- if (type == "relative") "fill" else "stack"
+  label_y <- if (type == "relative") "Proportion of Cells" else "Number of Cells"
+
+  # 3. Setup Palette (Default to alphabet if NULL)
+  if (is.null(palette)) {
+    unique_items <- as.character(unique(df$SplitVar))
+    n_items <- length(unique_items)
+    
+    if (n_items <= 26) {
+      # Use alphabet directly if small enough
+      pal_vec <- as.character(pals::alphabet(n = n_items))
+    } else {
+      # Interpolate alphabet colors to handle 26+ items
+      pal_vec <- colorRampPalette(as.character(pals::alphabet()))(n_items)
+    }
+    palette <- setNames(pal_vec, unique_items)
+  }
+
+  p <- ggplot(df, aes(x = Cluster, y = Count, fill = SplitVar)) +
+    geom_bar(stat = "identity", position = pos) +
+    scale_fill_manual(values = palette) + # Use the alphabet palette
+    theme_bw() +
+    labs(
+      title = paste("Composition of", cluster_col, "by", split_by),
+      subtitle = paste("Mode:", type),
+      x = "Cluster",
+      y = label_y,
+      fill = split_by
+    ) +
+    theme(
+      # Updated to 90 degrees and adjusted justification to align with ticks
+      axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_blank() # Clean up the X-axis grid for bar charts
+    )
+  
+  return(p)
+}
+
 
 # CT_QC_plot:
 # This function generates a comprehensive PDF report of cluster-level quality control (QC) plots for cell typing validation.
@@ -1303,7 +1384,7 @@ totalcount_norm <- function(counts_matrix, tc = NULL){
 #   - Optional heatmap and flightpath/trajectory plots if InSituType results provided.
 #   - Embedding plots of clusters, annotations, and study IDs for visual inspection.
 
-CT_QC_plot <- function(seu, cluster_col, cluster_pal=NULL, annotation_col = NULL, annotation_pal = NULL, IST_obj = NULL, out_dir = ".", reduction = NULL) {
+CT_QC_plot <- function(seu, cluster_col, cluster_pal=NULL, annotation_col = NULL, annotation_pal = NULL, IST_obj = NULL, out_dir = ".", reduction = NULL, split_by_col = "study_id") {
     
     pdf(file.path(out_dir, paste0("Cluster_QC_", cluster_col, ".pdf")), width = 10, height = 10)
 
@@ -1344,13 +1425,18 @@ CT_QC_plot <- function(seu, cluster_col, cluster_pal=NULL, annotation_col = NULL
         p3 <- plot_embedding(
             seu,
             reduction = reduction,
-            group.by = "study_id",
+            group.by = split_by_col,
             label = TRUE,
             palette = NULL,
             legend = TRUE
             ) 
         print(p3)
     }
+
+    print(plot_composition(seu, cluster_col = cluster_col, split_by = split_by_col, type = "relative"))
+    print(plot_composition(seu, cluster_col = cluster_col, split_by = split_by_col, type = "absolute"))
+    print(plot_composition(seu, cluster_col = split_by_col, split_by = cluster_col, type = "relative", palette = cluster_pal))
+    print(plot_composition(seu, cluster_col = split_by_col, split_by = cluster_col, type = "absolute", palette = cluster_pal))
 
     dev.off()
     }
