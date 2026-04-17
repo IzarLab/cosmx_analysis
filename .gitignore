@@ -5,3 +5,4 @@ cosmx_rna/NBClust-Plots
 *.csv
 *.pdf
 .DS_Store
+*.DS_Store
